@@ -1,0 +1,46 @@
+====================
+📚 Dataset Setup
+====================
+
+We are using the **Cityscapes** and **Foggy Cityscapes** datasets.
+
+Directory Structure:
+--------------------
+data/
+├── cityscapes/
+│   ├── leftImg8bit (clear images)
+│   └── gtFine (annotations)
+└── foggy_cityscapes/
+    └── leftImg8bit_foggy (foggy images, symbolic link)
+
+🔗 Symbolic Link (Foggy Dataset)
+--------------------------------
+The `leftImg8bit_foggy` dataset is stored on Google Drive due to its large size. 
+To integrate this into your local project without copying large datasets:
+
+Run the following command **once**, from the root of the project directory:
+
+    ln -s "/Users/eliasmapendo/Google Drive/My Drive/leftImg8bit_foggy" data/foggy_cityscapes/leftImg8bit_foggy
+
+Important:
+- Ensure Google Drive is set to "**Available offline**" for the folder to avoid file-access issues.
+- Double-check the symbolic link by running:
+
+      ls data/foggy_cityscapes/leftImg8bit_foggy
+
+  You should see:
+
+      train  val  test
+
+Additional Information:
+-----------------------
+
+- To use the symbolic link method effectively, first ensure you have **Google Drive Desktop** installed on your local machine:
+  - Download it from: https://www.google.com/drive/download/
+
+Reason for Using Symbolic Links:
+--------------------------------
+- The `leftImg8bit_foggy` dataset is too large to conveniently move or copy directly onto the local computer.
+- Attempts to move or copy the folder from Google Drive directly may fail due to file size limitations, synchronization issues, or permissions.
+
+By using a symbolic link, we avoid these issues and still allow seamless integration and usage of the dataset as if it were local.

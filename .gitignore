@@ -1,0 +1,22 @@
+# Ignore dataset
+data/cityscapes/
+data/foggy_cityscapes/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+env.bak/
+venv.bak/
+*.egg-info/
+.installed.cfg
+*.egg
+
+.venv/
+
+*.DS_Store
