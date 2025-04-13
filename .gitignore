@@ -1,22 +1,57 @@
-# Ignore dataset
-data/cityscapes/
-data/foggy_cityscapes/
-# Python
+.venv/
+
+# macOS system files
+*.DS_Store
+
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
+
+# Virtual environment
 venv/
 ENV/
 env/
-.venv/
 env.bak/
 venv.bak/
+.Python
+
+# Distribution / packaging
 *.egg-info/
-.installed.cfg
 *.egg
+.installed.cfg
+pip-wheel-metadata/
+build/
+dist/
 
-.venv/
+# Logs and checkpoints
+*.log
+*.pth
+*.ckpt
+*.pt
 
-*.DS_Store
+# Experiments and training outputs
+experiments/
+runs/
+checkpoints/
+output/
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# VSCode / PyCharm
+.vscode/
+.idea/
+
+# Dataset folders (usually large and non-tracked)
+data/cityscapes/
+data/foggy_cityscapes/
+
+# Google Drive sync temp
+.tmp.driveupload/
+.tmp.drivedownload
