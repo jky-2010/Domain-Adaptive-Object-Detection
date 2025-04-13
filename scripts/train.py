@@ -1,8 +1,8 @@
 # Author: Elias Mapendo
-# Description: Training loop for Faster R-CNN on Cityscapes object detection
+# Description: Training loop for Faster R-CNN on Cityscapes object detection with checkpoint saving and resuming
 
-import torch
-from torch.utils.data import DataLoader
+import torch, random, os
+from torch.utils.data import DataLoader, Subset
 from models.faster_cnn import get_faster_rcnn_model
 from data.datasets import CityscapesDataset
 from data.preprocessing import BasicTransform
@@ -14,7 +14,7 @@ def collate_fn(batch):
     return tuple(zip(*batch))
 
 
-def train_model(num_epochs=10, batch_size=2, lr=0.005, device='cuda'):
+def train_model(num_epochs=10, batch_size=2, lr=0.005, device='cuda', resume_epoch=0):
     print("\n[INFO] Starting training loop...")
 
     # Target label IDs from Cityscapes for object detection
@@ -23,12 +23,15 @@ def train_model(num_epochs=10, batch_size=2, lr=0.005, device='cuda'):
 
     # Data setup with preprocessing and dataset instantiation
     transform = BasicTransform()
-    train_dataset = CityscapesDataset(
+    full_dataset = CityscapesDataset(
         mode='train',
         foggy=False,
         transforms=transform,
         target_labels=target_labels
     )
+    subset_size = len(full_dataset) // 6
+    train_dataset = Subset(full_dataset, list(range(subset_size)))
+
     # Use num_workers=0 for macOS compatibility and debugging
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=0)
 
@@ -41,7 +44,23 @@ def train_model(num_epochs=10, batch_size=2, lr=0.005, device='cuda'):
     optimizer = torch.optim.SGD(params, lr=lr, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
-    for epoch in range(num_epochs):
+    # Create experiment directory if it doesn't exist
+    os.makedirs('experiments', exist_ok=True)
+
+    # Load checkpoint if resuming
+    if resume_epoch > 0:
+        checkpoint_path = f"experiments/faster_rcnn_epoch_{resume_epoch}.pth"
+        if os.path.exists(checkpoint_path):
+            print(f"[INFO] Resuming from checkpoint: {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            lr_scheduler.load_state_dict(checkpoint['scheduler'])
+        else:
+            print(f"[WARNING] Checkpoint not found: {checkpoint_path}. Starting from scratch.")
+            resume_epoch = 0
+
+    for epoch in range(resume_epoch, num_epochs):
         print(f"\n[INFO] Epoch {epoch+1}/{num_epochs}")
         model.train()
         epoch_loss = 0
@@ -67,11 +86,23 @@ def train_model(num_epochs=10, batch_size=2, lr=0.005, device='cuda'):
         lr_scheduler.step()
         print(f"[INFO] Epoch Loss: {epoch_loss:.4f}")
 
+        # Save full training state after every epoch
+        checkpoint_path = f"experiments/faster_rcnn_epoch_{epoch+1}.pth"
+        torch.save({
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': lr_scheduler.state_dict(),
+            'epoch': epoch+1
+        }, checkpoint_path)
+        print(f"[INFO] Saved checkpoint to {checkpoint_path}")
+
     print("\n[INFO] Training completed.")
     return model
 
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    trained_model = train_model(device=device)
+    # Set this to the last completed epoch to resume training
+    resume_from_epoch = 0
+    trained_model = train_model(device=device, num_epochs=5, resume_epoch=resume_from_epoch)
     torch.save(trained_model.state_dict(), 'experiments/faster_rcnn_cityscapes.pth')
