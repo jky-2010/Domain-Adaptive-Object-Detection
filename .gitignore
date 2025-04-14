@@ -32,7 +32,11 @@ dist/
 *.pt
 
 # Experiments and training outputs
-experiments/
+experiments/faster_rcnn_epoch_1.pth
+experiments/faster_rcnn_epoch_2.pth
+experiments/faster_rcnn_epoch_3.pth
+experiments/faster_rcnn_epoch_4.pth
+experiments/faster_rcnn_epoch_5.pth
 runs/
 checkpoints/
 output/
