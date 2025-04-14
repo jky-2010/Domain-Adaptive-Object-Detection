@@ -103,6 +103,6 @@ def train_model(num_epochs=10, batch_size=2, lr=0.005, device='cuda', resume_epo
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     # Set this to the last completed epoch to resume training
-    resume_from_epoch = 0
+    resume_from_epoch = 3
     trained_model = train_model(device=device, num_epochs=5, resume_epoch=resume_from_epoch)
     torch.save(trained_model.state_dict(), 'experiments/faster_rcnn_cityscapes.pth')
