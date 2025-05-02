@@ -5,8 +5,7 @@ Description:
 Domain-adaptive trainer for object detection using adversarial learning.
 Combines Faster R-CNN detection loss with domain confusion losses from image-level and instance-level classifiers.
 """
-
-import torch
+import torch, os, sys
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -14,6 +13,8 @@ from models.faster_cnn import get_faster_rcnn_model
 from models.domain_classifiers import ImageLevelDomainClassifier, InstanceLevelDomainClassifier
 from data.datasets import CityscapesDataset
 from data.preprocessing import BasicTransform
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def collate_fn(batch):
     return tuple(zip(*batch))
@@ -35,6 +36,15 @@ class DomainAdaptiveTrainer:
 
         # Load base Faster R-CNN model
         self.detector = get_faster_rcnn_model(num_classes=self.num_classes).to(self.device)
+
+        # Load pretrained base model weights if available
+        pretrained_path = "experiments/faster_rcnn_cityscapes.pth"
+        if os.path.exists(pretrained_path):
+            print(f"[INFO] Loading base model weights from '{pretrained_path}'")
+            state_dict = torch.load(pretrained_path, map_location=self.device)
+            self.detector.load_state_dict(state_dict)
+        else:
+            print(f"[WARNING] Base model weights not found at '{pretrained_path}' — starting from scratch.")
 
         # Add domain classifiers
         self.image_domain_classifier = ImageLevelDomainClassifier(in_channels=256).to(self.device)
