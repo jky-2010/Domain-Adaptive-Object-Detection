@@ -17,15 +17,21 @@ def collate_fn(batch):
     return tuple(zip(*batch)) if isinstance(batch[0], tuple) else batch
 
 
-def visualize_and_save_predictions(images, outputs, output_dir, prefix, threshold=0.5):
+def visualize_and_save_predictions(images, outputs, output_dir, prefix, threshold=0.5, targets=None):
     os.makedirs(output_dir, exist_ok=True)
+
     for i, (img, output) in enumerate(zip(images, outputs)):
-        boxes = output['boxes'][output['scores'] > threshold]
-        labels = output['labels'][output['scores'] > threshold]
+        # Predicted boxes (scores > threshold)
+        pred_boxes = output['boxes'][output['scores'] > threshold].cpu()
+        pred_labels = output['labels'][output['scores'] > threshold].cpu()
+        drawn = draw_bounding_boxes((img.cpu() * 255).byte(), pred_boxes, labels=[str(l.item()) for l in pred_labels], colors="red")
 
-        drawn = draw_bounding_boxes((img.cpu() * 255).byte(), boxes, labels=[str(l.item()) for l in labels], colors="red")
+        # Ground truth boxes (if available)
+        if targets is not None:
+            gt_boxes = targets[i]['boxes'].cpu()
+            drawn = draw_bounding_boxes(drawn, gt_boxes, colors="green")  # Add GT in green
+
         img_pil = to_pil_image(drawn)
-
         img_path = os.path.join(output_dir, f"{prefix}.png")
         img_pil.save(img_path)
 
@@ -71,7 +77,10 @@ def evaluate_on_split(model, split='val', foggy=False, device='cuda'):
                 targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
             outputs = model(images)
-            visualize_and_save_predictions(images, outputs, output_dir, prefix=f"{name.lower()}_{idx + 1}")
+            visualize_and_save_predictions(
+                images, outputs, output_dir, prefix=f"{name.lower()}_{idx + 1}",
+                targets=targets if not foggy else None
+            )
 
             if not foggy:
                 gt_boxes = targets[0]['boxes']

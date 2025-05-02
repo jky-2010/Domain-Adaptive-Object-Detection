@@ -9,7 +9,7 @@ annotation pairs for semantic segmentation training.
 import torchvision.transforms.functional as TF
 
 class BasicTransform:
-    def __init__(self, resize=(256, 512)):
+    def __init__(self, resize=(768, 1536)):
         self.resize = resize
 
     def __call__(self, image, annotation=None):
