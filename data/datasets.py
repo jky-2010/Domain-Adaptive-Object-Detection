@@ -19,7 +19,11 @@ class CityscapesDataset(Dataset):
         self.target_labels = target_labels if target_labels else [24, 25, 26, 27, 28, 31, 32, 33]  # Common object classes
 
         if foggy:
-            img_dir = '/Users/eliasmapendo/Google Drive/My Drive/leftImg8bit_foggy/' + mode
+            colab_path = '/content/gdrive/MyDrive/leftImg8bit_foggy'
+            local_path = '/Users/eliasmapendo/Google Drive/My Drive/leftImg8bit_foggy/'
+
+            base_img_dir = local_path if os.path.exists(local_path) else colab_path
+            img_dir = os.path.join(base_img_dir, mode)
             self.annotations_available = False
         else:
             img_dir = os.path.join(project_root, 'data', 'cityscapes', 'leftImg8bit', mode)
