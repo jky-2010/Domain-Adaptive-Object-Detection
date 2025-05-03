@@ -13,12 +13,11 @@ import warnings
 
 from models.faster_cnn import get_faster_rcnn_model
 from models.domain_classifiers import ImageLevelDomainClassifier, InstanceLevelDomainClassifier
-from models.domain_losses import compute_domain_loss
 from data.datasets import CityscapesDataset
 from data.preprocessing import BasicTransform
-from data.utils import collate_fn
 from data.preprocessing import ensure_three_channels
-from utils.checkpoints import save_checkpoint
+from models.domain_losses import compute_domain_loss
+from data.utils import collate_fn
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,10 +33,14 @@ class DomainAdaptiveTrainer:
         self.batch_size = batch_size
         self.lr = lr
 
+        # Label mapping
         self.target_labels = [24, 25, 26, 27, 28, 31, 32, 33]
-        self.num_classes = len(self.target_labels) + 1
+        self.num_classes = len(self.target_labels) + 1  # +1 for background
 
+        # Load base Faster R-CNN model
         self.detector = get_faster_rcnn_model(num_classes=self.num_classes).to(self.device)
+
+        # Load pretrained base model weights if available
         pretrained_path = "experiments/faster_rcnn_cityscapes.pth"
         if os.path.exists(pretrained_path):
             print(f"[INFO] Loading base model weights from '{pretrained_path}'")
@@ -46,9 +49,11 @@ class DomainAdaptiveTrainer:
         else:
             print(f"[WARNING] Base model weights not found at '{pretrained_path}' — starting from scratch.")
 
+        # Add domain classifiers
         self.image_domain_classifier = ImageLevelDomainClassifier(in_channels=256).to(self.device)
         self.instance_domain_classifier = InstanceLevelDomainClassifier(in_channels=1024).to(self.device)
 
+        # Combine all parameters for joint optimization
         params = list(self.detector.parameters()) + \
                  list(self.image_domain_classifier.parameters()) + \
                  list(self.instance_domain_classifier.parameters())
@@ -56,22 +61,32 @@ class DomainAdaptiveTrainer:
         self.optimizer = torch.optim.SGD(params, lr=self.lr, momentum=0.9, weight_decay=0.0005)
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=5, gamma=0.1)
 
+        # Loss functions
+        self.domain_loss_fn = torch.nn.CrossEntropyLoss()
+
     def get_dataloaders(self):
+        """Prepare DataLoaders for source (clear) and target (foggy) domains."""
         transform = BasicTransform()
+
+        # SOURCE (clear)
         source_dataset = CityscapesDataset(mode='train', foggy=False, transforms=transform, target_labels=self.target_labels)
         subset_size_src = int(0.8 * len(source_dataset))
         source_subset = Subset(source_dataset, random.sample(range(len(source_dataset)), subset_size_src))
 
+        # TARGET (foggy)
         target_dataset = CityscapesDataset(mode='train', foggy=True, transforms=transform, target_labels=self.target_labels)
         subset_size_tgt = int(0.8 * len(target_dataset))
         target_subset = Subset(target_dataset, random.sample(range(len(target_dataset)), subset_size_tgt))
 
-        source_loader = DataLoader(source_subset, batch_size=self.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=2)
-        target_loader = DataLoader(target_subset, batch_size=self.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=2)
+        source_loader = DataLoader(source_subset, batch_size=self.batch_size, shuffle=True,
+                                   collate_fn=collate_fn, num_workers=2)
+        target_loader = DataLoader(target_subset, batch_size=self.batch_size, shuffle=True,
+                                   collate_fn=collate_fn, num_workers=2)
 
         return source_loader, target_loader
 
     def train_one_epoch(self, source_loader, target_loader):
+        """Train for one epoch, alternating between source and target batches."""
         self.detector.train()
         self.image_domain_classifier.train()
         self.instance_domain_classifier.train()
@@ -84,35 +99,69 @@ class DomainAdaptiveTrainer:
         progress_bar = tqdm(range(num_batches), desc="Training Progress")
 
         for batch_idx in progress_bar:
+            # === Source (clear) ===
             try:
                 source_images, source_targets = next(source_iter)
             except StopIteration:
                 source_iter = iter(source_loader)
                 source_images, source_targets = next(source_iter)
 
-            source_images = [ensure_three_channels(img.to(self.device)) for img in source_images]
+            source_images = [img.to(self.device) for img in source_images]
             source_targets = [{k: v.to(self.device) for k, v in t.items()} for t in source_targets]
 
+            # === Target (foggy, no annotations) ===
             try:
                 target_batch = next(target_iter)
             except StopIteration:
                 target_iter = iter(target_loader)
                 target_batch = next(target_iter)
 
-            target_images = [ensure_three_channels(img.to(self.device)) for img in (target_batch[0] if isinstance(target_batch, tuple) else target_batch)]
+            # Handle different return types from target_batch
+            if isinstance(target_batch, tuple) and len(target_batch) > 0:
+                target_images = target_batch[0]
+            else:
+                target_images = target_batch
 
+            target_images = [img.to(self.device) for img in target_images]
+
+            # Check and fix each image individually to ensure 3 channels
+            for i in range(len(source_images)):
+                source_images[i] = ensure_three_channels(source_images[i])
+
+            for i in range(len(target_images)):
+                target_images[i] = ensure_three_channels(target_images[i])
+
+            # === Forward: Compute detection loss (source only) ===
             self.optimizer.zero_grad()
+
+            # Use original source images for detection to maintain consistency
+            # with the pretrained model
             loss_dict = self.detector(source_images, source_targets)
             detection_loss = sum(loss for loss in loss_dict.values())
 
+            # === Extract features ===
+            # Stack and ensure 3 channels for both source and target tensors
             source_tensor = torch.stack(source_images)
             target_tensor = torch.stack(target_images)
 
+            # Double-check the stacked tensors have 3 channels
+            source_tensor = ensure_three_channels(source_tensor)
+            target_tensor = ensure_three_channels(target_tensor)
+
+            # Print shape info for debugging (can be removed in production)
+            if batch_idx == 0:  # Only print on first batch
+                print(f"[INFO] Source tensor shape: {source_tensor.shape}")
+                print(f"[INFO] Target tensor shape: {target_tensor.shape}")
+
+            # Extract backbone features
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 source_features = self.detector.backbone(source_tensor)
                 target_features = self.detector.backbone(target_tensor)
 
+            # === Image-level domain loss ===
+            # Use the first layer of features from the feature pyramid
+            # The keys in the feature dictionary are strings ('0', '1', '2', '3')
             src_img_features = source_features['0'] if isinstance(source_features, dict) else source_features[0]
             tgt_img_features = target_features['0'] if isinstance(target_features, dict) else target_features[0]
 
@@ -121,6 +170,8 @@ class DomainAdaptiveTrainer:
 
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
+            # === Instance-level domain loss using proposals ===
+            # Create ordered dictionaries if features are in a list format
             if not isinstance(source_features, dict):
                 source_feats_dict = {str(i): f for i, f in enumerate(source_features)}
                 target_feats_dict = {str(i): f for i, f in enumerate(target_features)}
@@ -130,46 +181,55 @@ class DomainAdaptiveTrainer:
 
             try:
                 with torch.no_grad():
+                    # Generate proposals for source
+                    src_features = list(source_feats_dict.values())
+                    src_proposals, _ = self.detector.rpn(src_features, [dict() for _ in source_tensor],
+                                                         [source_tensor.shape[-2:]] * len(source_tensor))
+
+                    # Generate proposals for target
+                    tgt_features = list(target_feats_dict.values())
+                    tgt_proposals, _ = self.detector.rpn(tgt_features, [dict() for _ in target_tensor],
+                                                         [target_tensor.shape[-2:]] * len(target_tensor))
+
+                    # Pool ROI features
                     src_box_features = self.detector.roi_heads.box_roi_pool(
-                        source_feats_dict,
-                        [self.detector.rpn.box_coder.decode(p.detach()) for p in self.detector.rpn.head.anchors],
-                        [source_tensor.shape[-2:]] * len(source_tensor)
+                        source_feats_dict, src_proposals, [source_tensor.shape[-2:]] * len(source_tensor)
                     )
                     tgt_box_features = self.detector.roi_heads.box_roi_pool(
-                        target_feats_dict,
-                        [self.detector.rpn.box_coder.decode(p.detach()) for p in self.detector.rpn.head.anchors],
-                        [target_tensor.shape[-2:]] * len(target_tensor)
+                        target_feats_dict, tgt_proposals, [target_tensor.shape[-2:]] * len(target_tensor)
                     )
+
+                    # Pass through box head
                     src_proposal_feats = self.detector.roi_heads.box_head(src_box_features)
                     tgt_proposal_feats = self.detector.roi_heads.box_head(tgt_box_features)
             except Exception as e:
+                # Fallback for compatibility - just use image level features for this batch
                 print(f"[WARNING] Error in instance-level feature extraction: {e}")
                 print("[INFO] Skipping instance-level domain adaptation for this batch")
+                src_proposal_feats = []
+                tgt_proposal_feats = []
                 instance_domain_loss = torch.tensor(0.0, device=self.device)
-                src_proposal_feats, tgt_proposal_feats = [], []
 
+            # Use instance-level domain classifier if we have proposal features
             instance_domain_loss_src = 0.0
             instance_domain_loss_tgt = 0.0
 
-            if hasattr(src_proposal_feats, 'size') and src_proposal_feats.size(0) > 0:
+            if hasattr(src_proposal_feats, 'size') and hasattr(tgt_proposal_feats, 'size') and \
+                    src_proposal_feats.size(0) > 0 and tgt_proposal_feats.size(0) > 0:
                 src_inst_preds = self.instance_domain_classifier(src_proposal_feats)
-                src_inst_labels = torch.zeros(src_inst_preds.shape[0], dtype=torch.long, device=self.device)
-                instance_domain_loss_src = torch.nn.functional.cross_entropy(src_inst_preds, src_inst_labels)
-
-            if hasattr(tgt_proposal_feats, 'size') and tgt_proposal_feats.size(0) > 0:
                 tgt_inst_preds = self.instance_domain_classifier(tgt_proposal_feats)
-                tgt_inst_labels = torch.ones(tgt_inst_preds.shape[0], dtype=torch.long, device=self.device)
-                instance_domain_loss_tgt = torch.nn.functional.cross_entropy(tgt_inst_preds, tgt_inst_labels)
+                instance_domain_loss = compute_domain_loss(src_inst_preds, tgt_inst_preds, self.device)
+            else:
+                instance_domain_loss = torch.tensor(0.0, device=self.device)
 
-            instance_domain_loss = (instance_domain_loss_src + instance_domain_loss_tgt
-                                     if isinstance(instance_domain_loss_src, torch.Tensor) and isinstance(instance_domain_loss_tgt, torch.Tensor)
-                                     else torch.tensor(0.0, device=self.device))
-
+            # === Total loss & optimization ===
             total_batch_loss = detection_loss + img_domain_loss + instance_domain_loss
             total_batch_loss.backward()
             self.optimizer.step()
 
             total_loss += total_batch_loss.item()
+
+            # Update progress bar with loss
             progress_bar.set_postfix({"Loss": f"{total_batch_loss.item():.4f}"})
 
         self.lr_scheduler.step()
@@ -178,16 +238,21 @@ class DomainAdaptiveTrainer:
         return avg_loss
 
     def train(self, num_epochs=25):
+        """Train the model across multiple epochs."""
         source_loader, target_loader = self.get_dataloaders()
+
         try:
             for epoch in range(num_epochs):
                 print(f"\n[INFO] Epoch {epoch+1}/{num_epochs}")
                 self.train_one_epoch(source_loader, target_loader)
+
+                # Save checkpoint every 5 epochs
                 if (epoch + 1) % 5 == 0:
                     os.makedirs('experiments/checkpoints', exist_ok=True)
-                    save_checkpoint(self.detector, self.optimizer, self.lr_scheduler, epoch + 1,
-                                    f'experiments/checkpoints/faster_rcnn_da_epoch{epoch + 1}.pth')
+                    torch.save(self.detector.state_dict(),
+                              f'experiments/checkpoints/faster_rcnn_da_epoch{epoch+1}.pth')
                     print(f"[INFO] Saved checkpoint at epoch {epoch+1}")
+
         except KeyboardInterrupt:
             print("\n[INFO] Training interrupted by user. Saving final model...")
         except Exception as e:

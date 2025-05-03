@@ -38,7 +38,7 @@ class BasicTransform:
         return image
 
 
-def ensure_three_channels(self, image_tensor):
+def ensure_three_channels(image_tensor):
     """
     Ensure the image tensor has exactly 3 channels
     Args:
