@@ -52,7 +52,7 @@ class CityscapesDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img = Image.open(self.images[idx]).convert('RGB')
+        img = Image.open(self.images[idx]).convert('RGB')  # ✅ always RGB
 
         if self.annotations_available:
             annotation = Image.open(self.annotations[idx])
@@ -69,6 +69,7 @@ class CityscapesDataset(Dataset):
             return img, target
 
         else:
+            # ✅ Always call transforms(img, annotation=None)
             if self.transforms:
-                img = self.transforms(img)
+                img = self.transforms(img, annotation=None)
             return img
