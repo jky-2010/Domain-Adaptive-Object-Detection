@@ -182,12 +182,13 @@ class DomainAdaptiveTrainer:
             try:
                 with torch.no_grad():
                     # Generate proposals for source
-                    src_features = list(source_feats_dict.values())
+                    src_features = list(source_feats_dict.values()) if isinstance(source_feats_dict,
+                                                                                  dict) else source_feats_dict
                     src_proposals, _ = self.detector.rpn(src_features, [dict() for _ in source_tensor],
                                                          [source_tensor.shape[-2:]] * len(source_tensor))
 
                     # Generate proposals for target
-                    tgt_features = list(target_feats_dict.values())
+                    tgt_features = list(target_feats_dict.values()) if isinstance(target_feats_dict, dict) else target_feats_dict
                     tgt_proposals, _ = self.detector.rpn(tgt_features, [dict() for _ in target_tensor],
                                                          [target_tensor.shape[-2:]] * len(target_tensor))
 
@@ -208,11 +209,6 @@ class DomainAdaptiveTrainer:
                 print("[INFO] Skipping instance-level domain adaptation for this batch")
                 src_proposal_feats = []
                 tgt_proposal_feats = []
-                instance_domain_loss = torch.tensor(0.0, device=self.device)
-
-            # Use instance-level domain classifier if we have proposal features
-            instance_domain_loss_src = 0.0
-            instance_domain_loss_tgt = 0.0
 
             if hasattr(src_proposal_feats, 'size') and hasattr(tgt_proposal_feats, 'size') and \
                     src_proposal_feats.size(0) > 0 and tgt_proposal_feats.size(0) > 0:
