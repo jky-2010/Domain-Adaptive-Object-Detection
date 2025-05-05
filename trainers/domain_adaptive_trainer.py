@@ -160,58 +160,85 @@ class DomainAdaptiveTrainer:
                 target_features = self.detector.backbone(target_tensor)
 
             # === Image-level domain loss ===
-            # Use the first layer of features from the feature pyramid
-            # The keys in the feature dictionary are strings ('0', '1', '2', '3')
-            src_img_features = source_features['0'] if isinstance(source_features, dict) else source_features[0]
-            tgt_img_features = target_features['0'] if isinstance(target_features, dict) else target_features[0]
+            # Get the first feature map from the backbone (typically corresponds to the highest resolution)
+            if isinstance(source_features, dict):
+                # If features are a dictionary, get the first item
+                src_img_features = list(source_features.values())[0]
+                tgt_img_features = list(target_features.values())[0]
+            else:
+                # If features are a list, get the first item
+                src_img_features = source_features[0]
+                tgt_img_features = target_features[0]
 
             src_img_preds = self.image_domain_classifier(src_img_features)
             tgt_img_preds = self.image_domain_classifier(tgt_img_features)
 
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
+            def to_dict(features):
+                if isinstance(features, dict):
+                    return features
+                elif isinstance(features, list):
+                    return {str(i): f for i, f in enumerate(features)}
+                else:
+                    raise TypeError(f"Unexpected feature format: {type(features)}")
             # === Instance-level domain loss using proposals ===
-            # Create ordered dictionaries if features are in a list format
-            if not isinstance(source_features, dict):
-                source_feats_dict = {str(i): f for i, f in enumerate(source_features)}
-                target_feats_dict = {str(i): f for i, f in enumerate(target_features)}
-            else:
-                source_feats_dict = source_features
-                target_feats_dict = target_features
+            # Convert feature format consistently to dictionary for RPN
+            source_feats_dict = to_dict(source_features)
+            print(f"[DEBUG] source_feats_dict type: {type(source_feats_dict)}")
+            target_feats_dict = to_dict(target_features)
+            print(f"[DEBUG] target_feats_dict type: {type(target_feats_dict)}")
 
             try:
                 with torch.no_grad():
                     # Generate proposals for source
-                    src_features = list(source_feats_dict.values()) if isinstance(source_feats_dict,
-                                                                                  dict) else source_feats_dict
-                    src_proposals, _ = self.detector.rpn(src_features, [dict() for _ in source_tensor],
-                                                         [source_tensor.shape[-2:]] * len(source_tensor))
+                    src_proposals, _ = self.detector.rpn(
+                        source_features,  # Pass the list directly
+                        [{} for _ in range(len(source_images))],
+                        [img.shape[-2:] for img in source_images]
+                    )
 
                     # Generate proposals for target
-                    tgt_features = list(target_feats_dict.values()) if isinstance(target_feats_dict, dict) else target_feats_dict
-                    tgt_proposals, _ = self.detector.rpn(tgt_features, [dict() for _ in target_tensor],
-                                                         [target_tensor.shape[-2:]] * len(target_tensor))
+                    tgt_proposals, _ = self.detector.rpn(
+                        target_features,  # Pass the list directly
+                        [{} for _ in range(len(target_images))],
+                        [img.shape[-2:] for img in target_images]
+                    )
+
+                    # Ensure source_features is a list
+                    if not isinstance(source_features, list):
+                        source_features = [source_features]
+                    if not isinstance(target_features, list):
+                        target_features = [target_features]
 
                     # Pool ROI features
                     src_box_features = self.detector.roi_heads.box_roi_pool(
-                        source_feats_dict, src_proposals, [source_tensor.shape[-2:]] * len(source_tensor)
+                        source_features,
+                        src_proposals,
+                        [img.shape[-2:] for img in source_images]
                     )
                     tgt_box_features = self.detector.roi_heads.box_roi_pool(
-                        target_feats_dict, tgt_proposals, [target_tensor.shape[-2:]] * len(target_tensor)
+                        target_features,
+                        tgt_proposals,
+                        [img.shape[-2:] for img in target_images]
                     )
 
-                    # Pass through box head
+                    # Pass through box head to get proposal features
                     src_proposal_feats = self.detector.roi_heads.box_head(src_box_features)
                     tgt_proposal_feats = self.detector.roi_heads.box_head(tgt_box_features)
             except Exception as e:
                 # Fallback for compatibility - just use image level features for this batch
                 print(f"[WARNING] Error in instance-level feature extraction: {e}")
+                print(f"[ERROR DETAILS] {e}")  # Print the full error for more info
                 print("[INFO] Skipping instance-level domain adaptation for this batch")
-                src_proposal_feats = []
-                tgt_proposal_feats = []
+                src_proposal_feats = None
+                tgt_proposal_feats = None
 
-            if hasattr(src_proposal_feats, 'size') and hasattr(tgt_proposal_feats, 'size') and \
-                    src_proposal_feats.size(0) > 0 and tgt_proposal_feats.size(0) > 0:
+            # Calculate instance-level domain loss if we have proposal features
+            if (src_proposal_feats is not None and tgt_proposal_feats is not None and
+                    hasattr(src_proposal_feats, 'size') and hasattr(tgt_proposal_feats, 'size') and
+                    src_proposal_feats.size(0) > 0 and tgt_proposal_feats.size(0) > 0):
+
                 src_inst_preds = self.instance_domain_classifier(src_proposal_feats)
                 tgt_inst_preds = self.instance_domain_classifier(tgt_proposal_feats)
                 instance_domain_loss = compute_domain_loss(src_inst_preds, tgt_inst_preds, self.device)
