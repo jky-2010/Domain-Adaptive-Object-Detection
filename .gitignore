@@ -47,6 +47,7 @@ Thumbs.db
 # VSCode / PyCharm
 .vscode/
 .idea/
+.idea
 
 # Dataset folders (usually large and non-tracked)
 data/cityscapes/
