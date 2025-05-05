@@ -6,11 +6,10 @@ Domain-adaptive trainer for object detection using adversarial learning.
 Combines Faster R-CNN detection loss with domain confusion losses from image-level and instance-level classifiers.
 """
 
-import torch, os, sys, random
+import torch, os, sys, random, warnings
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-import warnings
-
+from collections import OrderedDict
 from models.faster_cnn import get_faster_rcnn_model
 from models.domain_classifiers import ImageLevelDomainClassifier, InstanceLevelDomainClassifier
 from data.datasets import CityscapesDataset
@@ -28,6 +27,7 @@ class DomainAdaptiveTrainer:
     by combining detection loss + domain classification loss
     for both clear and foggy datasets.
     """
+
     def __init__(self, device='cuda', batch_size=2, lr=0.005):
         self.device = device
         self.batch_size = batch_size
@@ -37,7 +37,7 @@ class DomainAdaptiveTrainer:
         self.target_labels = [24, 25, 26, 27, 28, 31, 32, 33]
         self.num_classes = len(self.target_labels) + 1  # +1 for background
 
-        # Load base Faster R-CNN model
+        # Save original RPN method, Load base Faster R-CNN model
         self.detector = get_faster_rcnn_model(num_classes=self.num_classes).to(self.device)
 
         # Load pretrained base model weights if available
@@ -48,6 +48,31 @@ class DomainAdaptiveTrainer:
             self.detector.load_state_dict(state_dict)
         else:
             print(f"[WARNING] Base model weights not found at '{pretrained_path}' — starting from scratch.")
+
+        # After model is loaded
+        from types import MethodType
+        from collections import OrderedDict
+
+        # Store original RPN methods
+        self.original_rpn_forward = self.detector.rpn.forward
+        self.original_rpn_call = self.detector.rpn.__call__
+
+        # Monkey-patch the RPN forward method to handle list or dict features properly
+        def safe_rpn_forward(rpn_self, features, images, image_shapes):
+            if isinstance(features, list):
+                print("[PATCHED forward] Converting features list to OrderedDict")
+                features = OrderedDict((str(i), f) for i, f in enumerate(features))
+            return self.original_rpn_forward(features, images, image_shapes)
+
+        def safe_rpn_call(rpn_self, *args, **kwargs):
+            if args and isinstance(args[0], list):
+                print("[PATCHED __call__] Converting features list to OrderedDict")
+                features = OrderedDict((str(i), f) for i, f in enumerate(args[0]))
+                args = (features,) + args[1:]
+            return self.original_rpn_call(*args, **kwargs)
+
+        self.detector.rpn.forward = MethodType(safe_rpn_forward, self.detector.rpn)
+        self.detector.rpn.__call__ = MethodType(safe_rpn_call, self.detector.rpn)
 
         # Add domain classifiers
         self.image_domain_classifier = ImageLevelDomainClassifier(in_channels=256).to(self.device)
@@ -69,12 +94,14 @@ class DomainAdaptiveTrainer:
         transform = BasicTransform()
 
         # SOURCE (clear)
-        source_dataset = CityscapesDataset(mode='train', foggy=False, transforms=transform, target_labels=self.target_labels)
+        source_dataset = CityscapesDataset(mode='train', foggy=False, transforms=transform,
+                                           target_labels=self.target_labels)
         subset_size_src = int(0.8 * len(source_dataset))
         source_subset = Subset(source_dataset, random.sample(range(len(source_dataset)), subset_size_src))
 
         # TARGET (foggy)
-        target_dataset = CityscapesDataset(mode='train', foggy=True, transforms=transform, target_labels=self.target_labels)
+        target_dataset = CityscapesDataset(mode='train', foggy=True, transforms=transform,
+                                           target_labels=self.target_labels)
         subset_size_tgt = int(0.8 * len(target_dataset))
         target_subset = Subset(target_dataset, random.sample(range(len(target_dataset)), subset_size_tgt))
 
@@ -84,6 +111,17 @@ class DomainAdaptiveTrainer:
                                    collate_fn=collate_fn, num_workers=2)
 
         return source_loader, target_loader
+
+    def ensure_ordered_dict(self, features):
+        """Helper method to ensure features are in OrderedDict format as needed by RPN."""
+        if isinstance(features, list):
+            return OrderedDict((str(i), f) for i, f in enumerate(features))
+        elif isinstance(features, dict) and not isinstance(features, OrderedDict):
+            return OrderedDict(features)
+        elif isinstance(features, OrderedDict):
+            return features
+        else:
+            raise TypeError(f"Unexpected feature type: {type(features)}")
 
     def train_one_epoch(self, source_loader, target_loader):
         """Train for one epoch, alternating between source and target batches."""
@@ -148,8 +186,8 @@ class DomainAdaptiveTrainer:
             source_tensor = ensure_three_channels(source_tensor)
             target_tensor = ensure_three_channels(target_tensor)
 
-            # Print shape info for debugging (can be removed in production)
-            if batch_idx == 0:  # Only print on first batch
+            # Print shape info for debugging (only on first batch)
+            if batch_idx == 0:
                 print(f"[INFO] Source tensor shape: {source_tensor.shape}")
                 print(f"[INFO] Target tensor shape: {target_tensor.shape}")
 
@@ -160,7 +198,7 @@ class DomainAdaptiveTrainer:
                 target_features = self.detector.backbone(target_tensor)
 
             # === Image-level domain loss ===
-            # Get the first feature map from the backbone (typically corresponds to the highest resolution)
+            # Get the first feature map from the backbone
             if isinstance(source_features, dict):
                 # If features are a dictionary, get the first item
                 src_img_features = list(source_features.values())[0]
@@ -175,52 +213,59 @@ class DomainAdaptiveTrainer:
 
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
-            def to_dict(features):
-                if isinstance(features, OrderedDict):
-                    return features  # already good
-                elif isinstance(features, dict):
-                    return OrderedDict(features)  # upgrade to OrderedDict
-                elif isinstance(features, list):
-                    return OrderedDict((str(i), f) for i, f in enumerate(features))  # force order
-                else:
-                    raise TypeError(f"Unexpected feature format: {type(features)}")
             # === Instance-level domain loss using proposals ===
-            # Convert feature format consistently to dictionary for RPN
-            source_feats_dict = to_dict(source_features)
-            target_feats_dict = to_dict(target_features)
+            # Convert feature format consistently to OrderedDict for RPN
+            source_feats_dict = self.ensure_ordered_dict(source_features)
+            target_feats_dict = self.ensure_ordered_dict(target_features)
 
             try:
                 with torch.no_grad():
+                    # Get proposals using the patched RPN
                     src_proposals, _ = self.detector.rpn(
                         source_feats_dict,
-                        [{} for _ in range(len(source_images))],
-                        [img.shape[-2:] for img in source_images]
+                        [{} for _ in range(len(source_images))],  # Empty targets
+                        [img.shape[-2:] for img in source_images]  # Image shapes
                     )
+
                     tgt_proposals, _ = self.detector.rpn(
                         target_feats_dict,
-                        [{} for _ in range(len(target_images))],
-                        [img.shape[-2:] for img in target_images]
+                        [{} for _ in range(len(target_images))],  # Empty targets
+                        [img.shape[-2:] for img in target_images]  # Image shapes
                     )
-                    # Pool ROI features
-                    src_box_features = self.detector.roi_heads.box_roi_pool(
-                        source_feats_dict,
-                        src_proposals,
-                        [img.shape[-2:] for img in source_images]
-                    )
-                    tgt_box_features = self.detector.roi_heads.box_roi_pool(
-                        target_feats_dict,
-                        tgt_proposals,
-                        [img.shape[-2:] for img in target_images]
-                    )
+
+                    # Extract ROI features
+                    if hasattr(self.detector, 'roi_pool'):
+                        src_box_features = self.detector.roi_pool(
+                            source_feats_dict,
+                            src_proposals,
+                            [img.shape[-2:] for img in source_images]
+                        )
+                        tgt_box_features = self.detector.roi_pool(
+                            target_feats_dict,
+                            tgt_proposals,
+                            [img.shape[-2:] for img in target_images]
+                        )
+                    else:
+                        # If roi_pool is not available, try to use box_roi_pool from roi_heads
+                        src_box_features = self.detector.roi_heads.box_roi_pool(
+                            source_feats_dict,
+                            src_proposals,
+                            [img.shape[-2:] for img in source_images]
+                        )
+                        tgt_box_features = self.detector.roi_heads.box_roi_pool(
+                            target_feats_dict,
+                            tgt_proposals,
+                            [img.shape[-2:] for img in target_images]
+                        )
 
                     # Pass through box head to get proposal features
                     src_proposal_feats = self.detector.roi_heads.box_head(src_box_features)
                     tgt_proposal_feats = self.detector.roi_heads.box_head(tgt_box_features)
             except Exception as e:
-                # Fallback for compatibility - just use image level features for this batch
-                print(f"[WARNING] Error in instance-level feature extraction: {e}")
-                print(f"[ERROR DETAILS] {e}")  # Print the full error for more info
-                print("[INFO] Skipping instance-level domain adaptation for this batch")
+                import traceback
+                print(f"[ERROR] Exception during instance-level domain adaptation:")
+                traceback.print_exc()
+                print(f"[INFO] Continuing without instance-level domain loss...")
                 src_proposal_feats = None
                 tgt_proposal_feats = None
 
@@ -243,7 +288,12 @@ class DomainAdaptiveTrainer:
             total_loss += total_batch_loss.item()
 
             # Update progress bar with loss
-            progress_bar.set_postfix({"Loss": f"{total_batch_loss.item():.4f}"})
+            progress_bar.set_postfix({
+                "Det_Loss": f"{detection_loss.item():.4f}",
+                "Img_Dom_Loss": f"{img_domain_loss.item():.4f}",
+                "Inst_Dom_Loss": f"{instance_domain_loss.item():.4f}",
+                "Total": f"{total_batch_loss.item():.4f}"
+            })
 
         self.lr_scheduler.step()
         avg_loss = total_loss / num_batches
@@ -256,20 +306,31 @@ class DomainAdaptiveTrainer:
 
         try:
             for epoch in range(num_epochs):
-                print(f"\n[INFO] Epoch {epoch+1}/{num_epochs}")
+                print(f"\n[INFO] Epoch {epoch + 1}/{num_epochs}")
                 self.train_one_epoch(source_loader, target_loader)
 
                 # Save checkpoint every 5 epochs
                 if (epoch + 1) % 5 == 0:
                     os.makedirs('experiments/checkpoints', exist_ok=True)
                     torch.save(self.detector.state_dict(),
-                              f'experiments/checkpoints/faster_rcnn_da_epoch{epoch+1}.pth')
-                    print(f"[INFO] Saved checkpoint at epoch {epoch+1}")
+                               f'experiments/checkpoints/faster_rcnn_da_epoch{epoch + 1}.pth')
+                    print(f"[INFO] Saved checkpoint at epoch {epoch + 1}")
 
         except KeyboardInterrupt:
             print("\n[INFO] Training interrupted by user. Saving final model...")
+            os.makedirs('experiments/checkpoints', exist_ok=True)
+            torch.save(self.detector.state_dict(), 'experiments/checkpoints/faster_rcnn_da_interrupted.pth')
         except Exception as e:
             print(f"\n[ERROR] Training failed with exception: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\n[INFO] Attempting to save model before exit...")
+            try:
+                os.makedirs('experiments/checkpoints', exist_ok=True)
+                torch.save(self.detector.state_dict(), 'experiments/checkpoints/faster_rcnn_da_error_recovery.pth')
+                print("[INFO] Recovery checkpoint saved.")
+            except:
+                print("[ERROR] Could not save recovery checkpoint.")
             raise
 
         print("\n[INFO] Domain-Adaptive Training Complete!")
