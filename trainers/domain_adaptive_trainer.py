@@ -87,17 +87,6 @@ class DomainAdaptiveTrainer:
 
         return source_loader, target_loader
 
-    def ensure_ordered_dict(self, features):
-        """Helper method to ensure features are in OrderedDict format as needed by RPN."""
-        if isinstance(features, list):
-            return OrderedDict((str(i), f) for i, f in enumerate(features))
-        elif isinstance(features, dict) and not isinstance(features, OrderedDict):
-            return OrderedDict(features)
-        elif isinstance(features, OrderedDict):
-            return features
-        else:
-            raise TypeError(f"Unexpected feature type: {type(features)}")
-
     def train_one_epoch(self, source_loader, target_loader):
         """Train for one epoch, alternating between source and target batches."""
         self.detector.train()
@@ -169,8 +158,19 @@ class DomainAdaptiveTrainer:
             # Extract backbone features
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
+
+                # Ensure backbone outputs are in OrderedDict format
                 source_features = self.detector.backbone(source_tensor)
                 target_features = self.detector.backbone(target_tensor)
+                assert isinstance(source_features, OrderedDict), f"Expected OrderedDict, got {type(source_features)}"
+
+            if batch_idx == 0:
+                print(f"[DEBUG] source_features keys: {list(source_features.keys())}")
+                print(f"[DEBUG] source_features type: {type(source_features)}")
+
+            expected_keys = {'0', '1', '2', '3', 'pool'}
+            assert set(source_features.keys()).issuperset(
+                expected_keys), f"Backbone keys mismatch: {source_features.keys()}"
 
             # === Image-level domain loss ===
             # Get the first feature map from the backbone
@@ -188,16 +188,11 @@ class DomainAdaptiveTrainer:
 
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
-            # === Instance-level domain loss using proposals ===
-            # Ensure feature format is consistently OrderedDict before RPN
-            source_feats_dict = self.ensure_ordered_dict(source_features)
-            target_feats_dict = self.ensure_ordered_dict(target_features)
-
             try:
                 with torch.no_grad():
                     # Ensure OrderedDict before RPN calls
-                    src_feats_ordered = self.ensure_ordered_dict(source_feats_dict)
-                    tgt_feats_ordered = self.ensure_ordered_dict(target_feats_dict)
+                    src_feats_ordered = source_features
+                    tgt_feats_ordered = target_features
 
                     # Get proposals
                     src_proposals, _ = self.detector.rpn(
