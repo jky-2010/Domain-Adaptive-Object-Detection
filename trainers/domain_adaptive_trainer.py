@@ -49,49 +49,6 @@ class DomainAdaptiveTrainer:
         else:
             print(f"[WARNING] Base model weights not found at '{pretrained_path}' — starting from scratch.")
 
-        from torchvision.models.detection.image_list import ImageList
-        from torchvision.models.detection.rpn import RegionProposalNetwork
-        from types import MethodType
-        from collections import OrderedDict
-
-        original_rpn_forward = RegionProposalNetwork.forward
-
-        # Backup original
-        RegionProposalNetwork.__original_forward__ = RegionProposalNetwork.forward
-
-        def patched_rpn_forward(rpn_self, features, images, image_shapes):
-            print(f"[DEBUG - Patched forward] Type of features received: {type(features)}")
-
-            from torchvision.models.detection.image_list import ImageList
-            from collections import OrderedDict
-
-            if isinstance(features, ImageList):
-                print("[DEBUG - Patched forward] Passing through ImageList unchanged.")
-                return RegionProposalNetwork.__original_forward__(rpn_self, features, images, image_shapes)
-
-            if isinstance(features, dict):
-                if not isinstance(features, OrderedDict):
-                    features = OrderedDict(features)
-                for k, v in features.items():
-                    if isinstance(v, list):
-                        print(f"[DEBUG] Feature at key {k} is a list. Flattening...")
-                        features[k] = v[0]
-                print("[DEBUG - Patched forward] Features dict is clean.")
-            elif isinstance(features, list):
-                print("[DEBUG - Patched forward] Converting list to OrderedDict...")
-                features = OrderedDict((str(i), f) for i, f in enumerate(features))
-            else:
-                raise TypeError(f"[ERROR] RPN received unsupported feature type: {type(features)}")
-
-            print(f"[DEBUG - Patched forward] Final keys in features: {list(features.keys())}")
-            print(f"[DEBUG - Patched forward] Final types in values: {[type(v) for v in features.values()]}")
-
-            return RegionProposalNetwork.__original_forward__(rpn_self, features, images, image_shapes)
-
-        # Apply class-level patch
-        import torchvision.models.detection.rpn as rpn_module
-        rpn_module.RegionProposalNetwork.forward = patched_rpn_forward
-
         # Add domain classifiers
         self.image_domain_classifier = ImageLevelDomainClassifier(in_channels=256).to(self.device)
         self.instance_domain_classifier = InstanceLevelDomainClassifier(in_channels=1024).to(self.device)
@@ -238,45 +195,48 @@ class DomainAdaptiveTrainer:
 
             try:
                 with torch.no_grad():
-                    # Get proposals using the patched RPN
+                    # Ensure OrderedDict before RPN calls
+                    src_feats_ordered = self.ensure_ordered_dict(source_feats_dict)
+                    tgt_feats_ordered = self.ensure_ordered_dict(target_feats_dict)
+
+                    # Get proposals
                     src_proposals, _ = self.detector.rpn(
-                        source_feats_dict,
-                        [{} for _ in range(len(source_images))],  # Empty targets
-                        [img.shape[-2:] for img in source_images]  # Image shapes
+                        src_feats_ordered,
+                        [{} for _ in range(len(source_images))],
+                        [img.shape[-2:] for img in source_images]
                     )
 
                     tgt_proposals, _ = self.detector.rpn(
-                        target_feats_dict,
-                        [{} for _ in range(len(target_images))],  # Empty targets
-                        [img.shape[-2:] for img in target_images]  # Image shapes
+                        tgt_feats_ordered,
+                        [{} for _ in range(len(target_images))],
+                        [img.shape[-2:] for img in target_images]
                     )
 
                     # Extract ROI features
                     if hasattr(self.detector, 'roi_pool'):
                         src_box_features = self.detector.roi_pool(
-                            source_feats_dict,
+                            src_feats_ordered,
                             src_proposals,
                             [img.shape[-2:] for img in source_images]
                         )
                         tgt_box_features = self.detector.roi_pool(
-                            target_feats_dict,
+                            tgt_feats_ordered,
                             tgt_proposals,
                             [img.shape[-2:] for img in target_images]
                         )
                     else:
-                        # If roi_pool is not available, try to use box_roi_pool from roi_heads
                         src_box_features = self.detector.roi_heads.box_roi_pool(
-                            source_feats_dict,
+                            src_feats_ordered,
                             src_proposals,
                             [img.shape[-2:] for img in source_images]
                         )
                         tgt_box_features = self.detector.roi_heads.box_roi_pool(
-                            target_feats_dict,
+                            tgt_feats_ordered,
                             tgt_proposals,
                             [img.shape[-2:] for img in target_images]
                         )
 
-                    # Pass through box head to get proposal features
+                    # Box head to get features
                     src_proposal_feats = self.detector.roi_heads.box_head(src_box_features)
                     tgt_proposal_feats = self.detector.roi_heads.box_head(tgt_box_features)
             except Exception as e:
