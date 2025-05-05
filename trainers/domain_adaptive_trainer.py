@@ -131,7 +131,14 @@ class DomainAdaptiveTrainer:
                 source_images[i] = ensure_three_channels(source_images[i])
 
             for i in range(len(target_images)):
+                if target_images[i].dim() == 2:
+                    target_images[i] = target_images[i].unsqueeze(0)  # [H, W] -> [1, H, W]
                 target_images[i] = ensure_three_channels(target_images[i])
+
+            for i in range(len(source_images)):
+                if source_images[i].dim() == 2:
+                    source_images[i] = source_images[i].unsqueeze(0)
+                source_images[i] = ensure_three_channels(source_images[i])
 
             # === Forward: Compute detection loss (source only) ===
             self.optimizer.zero_grad()
@@ -146,11 +153,7 @@ class DomainAdaptiveTrainer:
             source_tensor = torch.stack(source_images)
             target_tensor = torch.stack(target_images)
 
-            # Double-check the stacked tensors have 3 channels
-            source_tensor = ensure_three_channels(source_tensor)
-            target_tensor = ensure_three_channels(target_tensor)
-
-            # Print shape info for debugging (only on first batch)
+           # Print shape info for debugging (only on first batch)
             if batch_idx == 0:
                 print(f"[INFO] Source tensor shape: {source_tensor.shape}")
                 print(f"[INFO] Target tensor shape: {target_tensor.shape}")
@@ -158,11 +161,8 @@ class DomainAdaptiveTrainer:
             # Extract backbone features
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-
-                # Ensure backbone outputs are in OrderedDict format
                 source_features = self.detector.backbone(source_tensor)
                 target_features = self.detector.backbone(target_tensor)
-                assert isinstance(source_features, OrderedDict), f"Expected OrderedDict, got {type(source_features)}"
 
             if batch_idx == 0:
                 print(f"[DEBUG] source_features keys: {list(source_features.keys())}")
@@ -190,50 +190,34 @@ class DomainAdaptiveTrainer:
 
             try:
                 with torch.no_grad():
-                    # Ensure OrderedDict before RPN calls
-                    src_feats_ordered = source_features
-                    tgt_feats_ordered = target_features
+                    # Prepare image lists using detector's internal transform
+                    src_image_list = self.detector.transform(source_images)
+                    tgt_image_list = self.detector.transform(target_images)
 
-                    # Get proposals
-                    src_proposals, _ = self.detector.rpn(
-                        src_feats_ordered,
-                        [{} for _ in range(len(source_images))],
-                        [img.shape[-2:] for img in source_images]
+                    # Extract backbone features
+                    src_feats = self.detector.backbone(src_image_list.tensors)
+                    tgt_feats = self.detector.backbone(tgt_image_list.tensors)
+
+                    # Ensure features are OrderedDicts
+                    src_feats = OrderedDict((k, v) for k, v in src_feats.items())
+                    tgt_feats = OrderedDict((k, v) for k, v in tgt_feats.items())
+
+                    # Generate RPN proposals
+                    src_proposals, _ = self.detector.rpn(src_feats, src_image_list.image_sizes, None)
+                    tgt_proposals, _ = self.detector.rpn(tgt_feats, tgt_image_list.image_sizes, None)
+
+                    # ROI pooling
+                    src_box_features = self.detector.roi_heads.box_roi_pool(
+                        src_feats, src_proposals, src_image_list.image_sizes
+                    )
+                    tgt_box_features = self.detector.roi_heads.box_roi_pool(
+                        tgt_feats, tgt_proposals, tgt_image_list.image_sizes
                     )
 
-                    tgt_proposals, _ = self.detector.rpn(
-                        tgt_feats_ordered,
-                        [{} for _ in range(len(target_images))],
-                        [img.shape[-2:] for img in target_images]
-                    )
-
-                    # Extract ROI features
-                    if hasattr(self.detector, 'roi_pool'):
-                        src_box_features = self.detector.roi_pool(
-                            src_feats_ordered,
-                            src_proposals,
-                            [img.shape[-2:] for img in source_images]
-                        )
-                        tgt_box_features = self.detector.roi_pool(
-                            tgt_feats_ordered,
-                            tgt_proposals,
-                            [img.shape[-2:] for img in target_images]
-                        )
-                    else:
-                        src_box_features = self.detector.roi_heads.box_roi_pool(
-                            src_feats_ordered,
-                            src_proposals,
-                            [img.shape[-2:] for img in source_images]
-                        )
-                        tgt_box_features = self.detector.roi_heads.box_roi_pool(
-                            tgt_feats_ordered,
-                            tgt_proposals,
-                            [img.shape[-2:] for img in target_images]
-                        )
-
-                    # Box head to get features
+                    # Box head feature extraction
                     src_proposal_feats = self.detector.roi_heads.box_head(src_box_features)
                     tgt_proposal_feats = self.detector.roi_heads.box_head(tgt_box_features)
+
             except Exception as e:
                 import traceback
                 print(f"[ERROR] Exception during instance-level domain adaptation:")
