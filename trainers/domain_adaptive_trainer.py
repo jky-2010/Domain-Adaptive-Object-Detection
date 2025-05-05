@@ -191,16 +191,39 @@ class DomainAdaptiveTrainer:
             try:
                 with torch.no_grad():
                     # Prepare image lists using detector's internal transform
-                    src_image_list = self.detector.transform(source_images)
-                    tgt_image_list = self.detector.transform(target_images)
+                    src_image_list, _ = self.detector.transform(source_images)
+                    tgt_image_list, _ = self.detector.transform(target_images)
 
-                    # Extract backbone features
-                    src_feats = self.detector.backbone(src_image_list.tensors)
-                    tgt_feats = self.detector.backbone(tgt_image_list.tensors)
+                    src_feats_raw = self.detector.backbone(src_image_list.tensors)
+                    tgt_feats_raw = self.detector.backbone(tgt_image_list.tensors)
 
-                    # Ensure features are OrderedDicts
-                    src_feats = OrderedDict((k, v) for k, v in src_feats.items())
-                    tgt_feats = OrderedDict((k, v) for k, v in tgt_feats.items())
+                    print(f"[DEBUG] Raw src_feats type: {type(src_feats_raw)}")
+                    if isinstance(src_feats_raw, dict):
+                        print(f"[DEBUG] Raw src_feats keys: {list(src_feats_raw.keys())}")
+                    elif isinstance(src_feats_raw, list):
+                        print(f"[DEBUG] Raw src_feats list length: {len(src_feats_raw)}")
+                        print(f"[DEBUG] Raw src_feats[0] shape: {src_feats_raw[0].shape}")
+                    elif isinstance(src_feats_raw, torch.Tensor):
+                        print(f"[DEBUG] Raw src_feats shape: {src_feats_raw.shape}")
+                    else:
+                        print(f"[DEBUG] Raw src_feats unknown structure: {src_feats_raw}")
+
+                    def ensure_ordered_dict(feats):
+                        if isinstance(feats, dict):
+                            return OrderedDict((str(k), v) for k, v in feats.items())
+                        elif isinstance(feats, list):
+                            return OrderedDict((str(i), f) for i, f in enumerate(feats))
+                        elif isinstance(feats, torch.Tensor):
+                            return OrderedDict({'0': feats})
+                        else:
+                            raise TypeError(f"Unsupported feature type: {type(feats)}")
+
+                    # Convert to OrderedDict with integer keys
+                    src_feats = ensure_ordered_dict(src_feats_raw)
+                    tgt_feats = ensure_ordered_dict(tgt_feats_raw)
+
+                    print(f"[DEBUG] src_feats keys before RPN: {list(src_feats.keys())}")
+                    print(f"[DEBUG] tgt_feats keys before RPN: {list(tgt_feats.keys())}")
 
                     # Generate RPN proposals
                     src_proposals, _ = self.detector.rpn(src_feats, src_image_list.image_sizes, None)
