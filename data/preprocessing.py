@@ -40,39 +40,28 @@ class BasicTransform:
 
 def ensure_three_channels(image_tensor):
     """
-    Ensure the image tensor has exactly 3 channels
+    Ensure the image tensor has exactly 3 channels.
     Args:
-        image_tensor (torch.Tensor): Input image tensor
+        image_tensor (torch.Tensor): Input image tensor.
     Returns:
-        torch.Tensor: Image tensor with 3 channels
+        torch.Tensor: Image tensor with 3 channels.
     """
-    if image_tensor.dim() == 3:  # Single image
-        if image_tensor.size(0) == 1:
-            # Convert single channel to 3 channels
+    if image_tensor.dim() == 3:  # Single image: [C, H, W]
+        c, h, w = image_tensor.shape
+        if c == 1:
             return image_tensor.repeat(3, 1, 1)
-        elif image_tensor.size(0) == 2:
-            # Add a third channel
-            return torch.cat([image_tensor, torch.zeros(1, image_tensor.size(1), image_tensor.size(2),
-                                                      device=image_tensor.device)], dim=0)
-        elif image_tensor.size(0) == 3:
-            # Already 3 channels
-            return image_tensor
-        else:
-            # Truncate to 3 channels if more
+        elif c == 2:
+            return torch.cat([image_tensor, torch.zeros(1, h, w, device=image_tensor.device)], dim=0)
+        elif c >= 3:
             return image_tensor[:3, :, :]
-    elif image_tensor.dim() == 4:  # Batch of images
-        if image_tensor.size(1) == 1:
-            # Convert single channel to 3 channels
+    elif image_tensor.dim() == 4:  # Batch of images: [B, C, H, W]
+        b, c, h, w = image_tensor.shape
+        if c == 1:
             return image_tensor.repeat(1, 3, 1, 1)
-        elif image_tensor.size(1) == 2:
-            # Add a third channel
-            zeros = torch.zeros(image_tensor.size(0), 1, image_tensor.size(2), image_tensor.size(3),
-                               device=image_tensor.device)
+        elif c == 2:
+            zeros = torch.zeros(b, 1, h, w, device=image_tensor.device)
             return torch.cat([image_tensor, zeros], dim=1)
-        elif image_tensor.size(1) == 3:
-            # Already 3 channels
-            return image_tensor
-        else:
-            # Truncate to 3 channels if more
+        elif c >= 3:
             return image_tensor[:, :3, :, :]
-    return image_tensor
+
+    raise ValueError(f"Expected image tensor with 3 or 4 dims, got shape: {image_tensor.shape}")
