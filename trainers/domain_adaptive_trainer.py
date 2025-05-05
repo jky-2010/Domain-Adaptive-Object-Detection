@@ -176,49 +176,39 @@ class DomainAdaptiveTrainer:
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
             def to_dict(features):
-                if isinstance(features, dict):
-                    return features
+                if isinstance(features, OrderedDict):
+                    return features  # already good
+                elif isinstance(features, dict):
+                    return OrderedDict(features)  # upgrade to OrderedDict
                 elif isinstance(features, list):
-                    return {str(i): f for i, f in enumerate(features)}
+                    return OrderedDict((str(i), f) for i, f in enumerate(features))  # force order
                 else:
                     raise TypeError(f"Unexpected feature format: {type(features)}")
             # === Instance-level domain loss using proposals ===
             # Convert feature format consistently to dictionary for RPN
             source_feats_dict = to_dict(source_features)
-            print(f"[DEBUG] source_feats_dict type: {type(source_feats_dict)}")
             target_feats_dict = to_dict(target_features)
-            print(f"[DEBUG] target_feats_dict type: {type(target_feats_dict)}")
 
             try:
                 with torch.no_grad():
-                    # Generate proposals for source
                     src_proposals, _ = self.detector.rpn(
-                        source_features,  # Pass the list directly
+                        source_feats_dict,
                         [{} for _ in range(len(source_images))],
                         [img.shape[-2:] for img in source_images]
                     )
-
-                    # Generate proposals for target
                     tgt_proposals, _ = self.detector.rpn(
-                        target_features,  # Pass the list directly
+                        target_feats_dict,
                         [{} for _ in range(len(target_images))],
                         [img.shape[-2:] for img in target_images]
                     )
-
-                    # Ensure source_features is a list
-                    if not isinstance(source_features, list):
-                        source_features = [source_features]
-                    if not isinstance(target_features, list):
-                        target_features = [target_features]
-
                     # Pool ROI features
                     src_box_features = self.detector.roi_heads.box_roi_pool(
-                        source_features,
+                        source_feats_dict,
                         src_proposals,
                         [img.shape[-2:] for img in source_images]
                     )
                     tgt_box_features = self.detector.roi_heads.box_roi_pool(
-                        target_features,
+                        target_feats_dict,
                         tgt_proposals,
                         [img.shape[-2:] for img in target_images]
                     )
