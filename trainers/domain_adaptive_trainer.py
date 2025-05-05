@@ -49,30 +49,42 @@ class DomainAdaptiveTrainer:
         else:
             print(f"[WARNING] Base model weights not found at '{pretrained_path}' — starting from scratch.")
 
-        # After model is loaded
+        from torchvision.models.detection.image_list import ImageList
+        from torchvision.models.detection.rpn import RegionProposalNetwork
         from types import MethodType
         from collections import OrderedDict
 
-        # Store original RPN methods
-        self.original_rpn_forward = self.detector.rpn.forward
-        self.original_rpn_call = self.detector.rpn.__call__
+        original_rpn_forward = RegionProposalNetwork.forward
 
-        # Monkey-patch the RPN forward method to handle list or dict features properly
-        def safe_rpn_forward(rpn_self, features, images, image_shapes):
-            if isinstance(features, list):
-                print("[PATCHED forward] Converting features list to OrderedDict")
+        def patched_rpn_forward(rpn_self, features, images, image_shapes):
+            print(f"[DEBUG - Patched forward] Type of features received: {type(features)}")
+
+            if isinstance(features, ImageList):
+                print("[DEBUG - Patched forward] Passing through ImageList unchanged.")
+                return original_rpn_forward(rpn_self, features, images, image_shapes)
+
+            elif isinstance(features, list):
+                # Expected case: list of tensors
+                print("[DEBUG - Patched forward] Converting list to OrderedDict...")
                 features = OrderedDict((str(i), f) for i, f in enumerate(features))
-            return self.original_rpn_forward(features, images, image_shapes)
 
-        def safe_rpn_call(rpn_self, *args, **kwargs):
-            if args and isinstance(args[0], list):
-                print("[PATCHED __call__] Converting features list to OrderedDict")
-                features = OrderedDict((str(i), f) for i, f in enumerate(args[0]))
-                args = (features,) + args[1:]
-            return self.original_rpn_call(*args, **kwargs)
+            elif isinstance(features, dict):
+                if not isinstance(features, OrderedDict):
+                    features = OrderedDict(features)
+                # Unwrap any accidental list nesting (rare but possible)
+                for k, v in features.items():
+                    if isinstance(v, list):
+                        raise TypeError(f"[ERROR] Feature map at key '{k}' is a list instead of a tensor.")
+                print("[DEBUG - Patched forward] Features dict is clean.")
 
-        self.detector.rpn.forward = MethodType(safe_rpn_forward, self.detector.rpn)
-        self.detector.rpn.__call__ = MethodType(safe_rpn_call, self.detector.rpn)
+            else:
+                raise TypeError(f"[ERROR] RPN received unsupported feature type: {type(features)}")
+
+            print(f"[DEBUG - Patched forward] Final keys in features: {list(features.keys())}")
+            return original_rpn_forward(rpn_self, features, images, image_shapes)
+
+        # Patch the method
+        self.detector.rpn.forward = MethodType(patched_rpn_forward, self.detector.rpn)
 
         # Add domain classifiers
         self.image_domain_classifier = ImageLevelDomainClassifier(in_channels=256).to(self.device)
@@ -214,7 +226,7 @@ class DomainAdaptiveTrainer:
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
             # === Instance-level domain loss using proposals ===
-            # Convert feature format consistently to OrderedDict for RPN
+            # Ensure feature format is consistently OrderedDict before RPN
             source_feats_dict = self.ensure_ordered_dict(source_features)
             target_feats_dict = self.ensure_ordered_dict(target_features)
 
