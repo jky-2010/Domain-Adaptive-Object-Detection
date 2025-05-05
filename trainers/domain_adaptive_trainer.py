@@ -56,35 +56,41 @@ class DomainAdaptiveTrainer:
 
         original_rpn_forward = RegionProposalNetwork.forward
 
+        # Backup original
+        RegionProposalNetwork.__original_forward__ = RegionProposalNetwork.forward
+
         def patched_rpn_forward(rpn_self, features, images, image_shapes):
             print(f"[DEBUG - Patched forward] Type of features received: {type(features)}")
 
+            from torchvision.models.detection.image_list import ImageList
+            from collections import OrderedDict
+
             if isinstance(features, ImageList):
                 print("[DEBUG - Patched forward] Passing through ImageList unchanged.")
-                return original_rpn_forward(rpn_self, features, images, image_shapes)
+                return RegionProposalNetwork.__original_forward__(rpn_self, features, images, image_shapes)
 
-            elif isinstance(features, list):
-                # Expected case: list of tensors
-                print("[DEBUG - Patched forward] Converting list to OrderedDict...")
-                features = OrderedDict((str(i), f) for i, f in enumerate(features))
-
-            elif isinstance(features, dict):
+            if isinstance(features, dict):
                 if not isinstance(features, OrderedDict):
                     features = OrderedDict(features)
-                # Unwrap any accidental list nesting (rare but possible)
                 for k, v in features.items():
                     if isinstance(v, list):
-                        raise TypeError(f"[ERROR] Feature map at key '{k}' is a list instead of a tensor.")
+                        print(f"[DEBUG] Feature at key {k} is a list. Flattening...")
+                        features[k] = v[0]
                 print("[DEBUG - Patched forward] Features dict is clean.")
-
+            elif isinstance(features, list):
+                print("[DEBUG - Patched forward] Converting list to OrderedDict...")
+                features = OrderedDict((str(i), f) for i, f in enumerate(features))
             else:
                 raise TypeError(f"[ERROR] RPN received unsupported feature type: {type(features)}")
 
             print(f"[DEBUG - Patched forward] Final keys in features: {list(features.keys())}")
-            return original_rpn_forward(rpn_self, features, images, image_shapes)
+            print(f"[DEBUG - Patched forward] Final types in values: {[type(v) for v in features.values()]}")
 
-        # Patch the method
-        self.detector.rpn.forward = MethodType(patched_rpn_forward, self.detector.rpn)
+            return RegionProposalNetwork.__original_forward__(rpn_self, features, images, image_shapes)
+
+        # Apply class-level patch
+        import torchvision.models.detection.rpn as rpn_module
+        rpn_module.RegionProposalNetwork.forward = patched_rpn_forward
 
         # Add domain classifiers
         self.image_domain_classifier = ImageLevelDomainClassifier(in_channels=256).to(self.device)
