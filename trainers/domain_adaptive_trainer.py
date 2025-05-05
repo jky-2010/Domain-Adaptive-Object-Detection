@@ -208,26 +208,61 @@ class DomainAdaptiveTrainer:
                     else:
                         print(f"[DEBUG] Raw src_feats unknown structure: {src_feats_raw}")
 
+                    # Convert to OrderedDict with integer keys
                     def ensure_ordered_dict(feats):
                         if isinstance(feats, dict):
                             return OrderedDict((str(k), v) for k, v in feats.items())
                         elif isinstance(feats, list):
-                            return OrderedDict((str(i), f) for i, f in enumerate(feats))
+                            expected_keys_list = ['0', '1', '2', '3', 'pool']
+                            return OrderedDict((k, f) for k, f in zip(expected_keys_list, feats))
                         elif isinstance(feats, torch.Tensor):
                             return OrderedDict({'0': feats})
                         else:
                             raise TypeError(f"Unsupported feature type: {type(feats)}")
 
-                    # Convert to OrderedDict with integer keys
+                    # === Force correct format before RPN ===
                     src_feats = ensure_ordered_dict(src_feats_raw)
+                    print(f"[CHECK] Type before RPN: {type(src_feats)}")
                     tgt_feats = ensure_ordered_dict(tgt_feats_raw)
 
-                    print(f"[DEBUG] src_feats keys before RPN: {list(src_feats.keys())}")
-                    print(f"[DEBUG] tgt_feats keys before RPN: {list(tgt_feats.keys())}")
+                    print(f"[CHECK] Final src_feats type: {type(src_feats)}")
+                    print(f"[CHECK] Final src_feats keys: {list(src_feats.keys())}")
+                    print(f"[CHECK] First map shape: {list(src_feats.values())[0].shape}")
 
-                    # Generate RPN proposals
-                    src_proposals, _ = self.detector.rpn(src_feats, src_image_list.image_sizes, None)
-                    tgt_proposals, _ = self.detector.rpn(tgt_feats, tgt_image_list.image_sizes, None)
+                    assert isinstance(src_feats, OrderedDict), "src_feats is not an OrderedDict!"
+                    assert isinstance(tgt_feats, OrderedDict), "tgt_feats is not an OrderedDict!"
+
+                    print(f"[FINAL CHECK] src_feats type: {type(src_feats)}")
+                    print(f"[FINAL CHECK] src_feats keys: {list(src_feats.keys()) if isinstance(src_feats, dict) else 'NOT A DICT'}")
+
+                    def safe_manual_rpn_call(rpn_module, features, image_sizes):
+                        if isinstance(features, list):
+                            raise TypeError("Features must be a dict, not a list. Check upstream processing.")
+                        if not isinstance(features, dict):
+                            raise TypeError(f"Expected dict for RPN, got {type(features)}")
+
+                        # Just to ensure this code isn't fooled by accidental type cast
+                        if isinstance(features, OrderedDict):
+                            features = dict(features)  # Torchvision RPN uses `.values()` so this is safe
+
+                        return rpn_module(features, image_sizes, None)
+
+                    expected_keys = list(self.detector.rpn.head.strides.keys())
+                    assert all(k in src_feats for k in
+                               expected_keys), f"Missing keys in features for RPN: expected {expected_keys}, got {list(src_feats.keys())}"
+
+
+                    # === Call RPN safely ===
+                    src_proposals, _ = self.detector.rpn(
+                        [src_feats[k] for k in self.detector.rpn.head.strides.keys()],
+                        src_image_list.image_sizes,
+                        None
+                    )
+                    tgt_proposals, _ = self.detector.rpn(
+                        [tgt_feats[k] for k in self.detector.rpn.head.strides.keys()],
+                        tgt_image_list.image_sizes,
+                        None
+                    )
 
                     # ROI pooling
                     src_box_features = self.detector.roi_heads.box_roi_pool(
