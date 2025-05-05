@@ -247,19 +247,19 @@ class DomainAdaptiveTrainer:
 
                         return rpn_module(features, image_sizes, None)
 
-                    expected_keys = list(self.detector.rpn.head.strides.keys())
+                    expected_keys = ['0', '1', '2', '3', 'pool']
                     assert all(k in src_feats for k in
                                expected_keys), f"Missing keys in features for RPN: expected {expected_keys}, got {list(src_feats.keys())}"
 
 
                     # === Call RPN safely ===
                     src_proposals, _ = self.detector.rpn(
-                        [src_feats[k] for k in self.detector.rpn.head.strides.keys()],
+                        src_feats,
                         src_image_list.image_sizes,
                         None
                     )
                     tgt_proposals, _ = self.detector.rpn(
-                        [tgt_feats[k] for k in self.detector.rpn.head.strides.keys()],
+                        tgt_feats,
                         tgt_image_list.image_sizes,
                         None
                     )
