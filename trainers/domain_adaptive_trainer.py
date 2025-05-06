@@ -6,17 +6,14 @@ Domain-adaptive trainer for object detection using adversarial learning.
 Combines Faster R-CNN detection loss with domain confusion losses from image-level and instance-level classifiers.
 """
 
-import torch, os, sys, random, warnings
-from torch.utils.data import DataLoader, Subset
+import torch, os, sys, warnings
 from tqdm import tqdm
 from collections import OrderedDict
 from models.faster_cnn import get_faster_rcnn_model
 from models.domain_classifiers import ImageLevelDomainClassifier, InstanceLevelDomainClassifier
-from data.datasets import CityscapesDataset
-from data.preprocessing import BasicTransform
+from data.utils import get_dataloaders, ensure_ordered_dict
 from data.preprocessing import ensure_three_channels
-from models.domain_losses import compute_domain_loss
-from data.utils import collate_fn
+from models.utils import get_proposals_from_rpn, compute_domain_loss
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -63,34 +60,6 @@ class DomainAdaptiveTrainer:
 
         # Loss functions
         self.domain_loss_fn = torch.nn.CrossEntropyLoss()
-
-    def get_dataloaders(self):
-        """Prepare DataLoaders for source (clear) and target (foggy) domains."""
-        transform = BasicTransform()
-
-        # SOURCE (clear)
-        source_dataset = CityscapesDataset(mode='train', foggy=False, transforms=transform,
-                                           target_labels=self.target_labels)
-        subset_size_src = int(0.8 * len(source_dataset))
-        source_subset = Subset(source_dataset, random.sample(range(len(source_dataset)), subset_size_src))
-
-        # TARGET (foggy)
-        target_dataset = CityscapesDataset(mode='train', foggy=True, transforms=transform,
-                                           target_labels=self.target_labels)
-        subset_size_tgt = int(0.8 * len(target_dataset))
-        target_subset = Subset(target_dataset, random.sample(range(len(target_dataset)), subset_size_tgt))
-
-        source_loader = DataLoader(source_subset, batch_size=self.batch_size, shuffle=True,
-                                   collate_fn=collate_fn, num_workers=2)
-        target_loader = DataLoader(target_subset, batch_size=self.batch_size, shuffle=True,
-                                   collate_fn=collate_fn, num_workers=2)
-
-        return source_loader, target_loader
-
-    def get_proposals_from_rpn(self, detector, features, image_list, targets=None):
-        if not isinstance(features, OrderedDict):
-            features = OrderedDict((str(k), v) for k, v in enumerate(features))
-        return detector.rpn(image_list, features, targets=targets)
 
     def train_one_epoch(self, source_loader, target_loader):
         """Train for one epoch, alternating between source and target batches."""
@@ -158,20 +127,11 @@ class DomainAdaptiveTrainer:
             source_tensor = torch.stack(source_images)
             target_tensor = torch.stack(target_images)
 
-           # Print shape info for debugging (only on first batch)
-            if batch_idx == 0:
-                print(f"[INFO] Source tensor shape: {source_tensor.shape}")
-                print(f"[INFO] Target tensor shape: {target_tensor.shape}")
-
             # Extract backbone features
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 source_features = self.detector.backbone(source_tensor)
                 target_features = self.detector.backbone(target_tensor)
-
-            if batch_idx == 0:
-                print(f"[DEBUG] source_features keys: {list(source_features.keys())}")
-                print(f"[DEBUG] source_features type: {type(source_features)}")
 
             expected_keys = {'0', '1', '2', '3', 'pool'}
             assert set(source_features.keys()).issuperset(
@@ -202,37 +162,9 @@ class DomainAdaptiveTrainer:
                     src_feats_raw = self.detector.backbone(src_image_list.tensors)
                     tgt_feats_raw = self.detector.backbone(tgt_image_list.tensors)
 
-                    print(f"[DEBUG] Raw src_feats type: {type(src_feats_raw)}")
-                    if isinstance(src_feats_raw, dict):
-                        print(f"[DEBUG] Raw src_feats keys: {list(src_feats_raw.keys())}")
-                    elif isinstance(src_feats_raw, list):
-                        print(f"[DEBUG] Raw src_feats list length: {len(src_feats_raw)}")
-                        print(f"[DEBUG] Raw src_feats[0] shape: {src_feats_raw[0].shape}")
-                    elif isinstance(src_feats_raw, torch.Tensor):
-                        print(f"[DEBUG] Raw src_feats shape: {src_feats_raw.shape}")
-                    else:
-                        print(f"[DEBUG] Raw src_feats unknown structure: {src_feats_raw}")
-
-                    # Convert to OrderedDict with integer keys
-                    def ensure_ordered_dict(feats):
-                        if isinstance(feats, dict):
-                            return OrderedDict((str(k), v) for k, v in feats.items())
-                        elif isinstance(feats, list):
-                            expected_keys_list = ['0', '1', '2', '3', 'pool']
-                            return OrderedDict((k, f) for k, f in zip(expected_keys_list, feats))
-                        elif isinstance(feats, torch.Tensor):
-                            return OrderedDict({'0': feats})
-                        else:
-                            raise TypeError(f"Unsupported feature type: {type(feats)}")
-
                     # === Force correct format before RPN ===
                     src_feats = ensure_ordered_dict(src_feats_raw)
-                    print(f"[CHECK] Type before RPN: {type(src_feats)}")
                     tgt_feats = ensure_ordered_dict(tgt_feats_raw)
-
-                    print(f"[CHECK] Final src_feats type: {type(src_feats)}")
-                    print(f"[CHECK] Final src_feats keys: {list(src_feats.keys())}")
-                    print(f"[CHECK] First map shape: {list(src_feats.values())[0].shape}")
 
                     assert isinstance(src_feats, OrderedDict), "src_feats is not an OrderedDict!"
                     assert isinstance(tgt_feats, OrderedDict), "tgt_feats is not an OrderedDict!"
@@ -246,10 +178,10 @@ class DomainAdaptiveTrainer:
 
                     print("RPN input check:", type(src_feats), isinstance(src_feats, OrderedDict))
                     # === Call RPN safely ===
-                    src_proposals, _ = self.get_proposals_from_rpn(self.detector, src_feats, src_image_list, targets=source_targets)
+                    src_proposals, _ = get_proposals_from_rpn(self.detector, src_feats, src_image_list, targets=source_targets)
                     self.detector.rpn.eval()
                     with torch.no_grad():
-                        tgt_proposals, _ = self.get_proposals_from_rpn(self.detector, tgt_feats, tgt_image_list, targets=None)
+                        tgt_proposals, _ = get_proposals_from_rpn(self.detector, tgt_feats, tgt_image_list, targets=None)
                     self.detector.rpn.train()
 
                     # ROI pooling
@@ -305,7 +237,10 @@ class DomainAdaptiveTrainer:
 
     def train(self, num_epochs=25):
         """Train the model across multiple epochs."""
-        source_loader, target_loader = self.get_dataloaders()
+        source_loader, target_loader = get_dataloaders(
+            batch_size=self.batch_size,
+            target_labels=self.target_labels
+        )
 
         try:
             for epoch in range(num_epochs):
