@@ -23,7 +23,15 @@ def get_proposals_from_rpn(detector, features, image_list, targets=None):
         proposals (list[Tensor]), rpn_losses (dict): Output from RPN forward call.
     """
     if not isinstance(features, OrderedDict):
-        features = OrderedDict((str(k), v) for k, v in enumerate(features))
+        if isinstance(features, (list, tuple)):
+            features = OrderedDict((str(i), f) for i, f in enumerate(features))
+        elif isinstance(features, torch.Tensor):
+            features = OrderedDict({'0': features})
+        elif isinstance(features, dict):
+            features = OrderedDict(features)
+        else:
+            raise TypeError(f"Unsupported feature type for RPN: {type(features)}")
+
     return detector.rpn(image_list, features, targets=targets)
 
 
