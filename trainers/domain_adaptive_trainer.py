@@ -128,10 +128,12 @@ class DomainAdaptiveTrainer:
             target_tensor = torch.stack(target_images)
 
             # Extract backbone features
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                source_features = self.detector.backbone(source_tensor)
-                target_features = self.detector.backbone(target_tensor)
+            with torch.no_grad():
+                src_image_list, _ = self.detector.transform(source_images)
+                tgt_image_list, _ = self.detector.transform(target_images)
+
+            source_features = ensure_ordered_dict(self.detector.backbone(src_image_list.tensors))
+            target_features = ensure_ordered_dict(self.detector.backbone(tgt_image_list.tensors))
 
             expected_keys = {'0', '1', '2', '3', 'pool'}
             assert set(source_features.keys()).issuperset(
@@ -150,6 +152,10 @@ class DomainAdaptiveTrainer:
 
             src_img_preds = self.image_domain_classifier(src_img_features)
             tgt_img_preds = self.image_domain_classifier(tgt_img_features)
+
+            if (torch.isnan(src_img_preds).any() or torch.isnan(tgt_img_preds).any() ):
+                print(f"[WARNING] NaNs in image domain classifier output. Skipping batch {batch_idx}")
+                continue  # Skip this batch
 
             img_domain_loss = compute_domain_loss(src_img_preds, tgt_img_preds, self.device)
 
@@ -212,9 +218,20 @@ class DomainAdaptiveTrainer:
             else:
                 instance_domain_loss = torch.tensor(0.0, device=self.device)
 
-            # === Total loss & optimization ===
-            total_batch_loss = detection_loss + img_domain_loss + instance_domain_loss
+            # === [2] Scaled losses to reduce domain influence early on ===
+            total_batch_loss = (
+                    detection_loss +
+                    0.1 * img_domain_loss +
+                    0.1 * instance_domain_loss )
+
             total_batch_loss.backward()
+
+            # === [1] Gradient Clipping ===
+            torch.nn.utils.clip_grad_norm_(self.detector.parameters(), max_norm=10.0)
+            torch.nn.utils.clip_grad_norm_(self.image_domain_classifier.parameters(), max_norm=10.0)
+            torch.nn.utils.clip_grad_norm_(self.instance_domain_classifier.parameters(), max_norm=10.0)
+
+            # Optimizer step
             self.optimizer.step()
 
             total_loss += total_batch_loss.item()
