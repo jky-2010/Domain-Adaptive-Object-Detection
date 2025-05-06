@@ -32,13 +32,11 @@ class ImageLevelDomainClassifier(nn.Module):
             nn.Linear(hidden_dim, 2)  # Binary classification: source or target
         )
 
-    def forward(self, x):
+    def forward(self, x, lambda_=None):
         # Global Average Pooling across spatial dimensions (H, W)
-        x = x.mean(dim=[2, 3])  # (batch_size, channels)
-
-        x = self.grl(x) # Apply Gradient Reversal Layer
-
-        return self.classifier(x) # Classify as source/target
+        x = x.mean(dim=[2, 3])  # For image-level
+        x = self.grl(x, lambda_)
+        return self.classifier(x)
 
 
 class InstanceLevelDomainClassifier(nn.Module):
@@ -63,10 +61,10 @@ class InstanceLevelDomainClassifier(nn.Module):
             nn.Linear(hidden_dim, 2)  # Source or Target
         )
 
-    def forward(self, x):
+    def forward(self, x, lambda_=None):
         # x shape: (batch_size * num_rois, channels)
 
         # Apply Gradient Reversal Layer
-        x = self.grl(x)
+        x = self.grl(x, lambda_)
 
         return self.classifier(x) # Classify as source/target

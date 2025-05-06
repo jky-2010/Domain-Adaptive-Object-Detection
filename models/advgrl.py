@@ -64,12 +64,13 @@ class GradientReversalLayer(nn.Module):
         super(GradientReversalLayer, self).__init__()
         self.lambda_ = lambda_
 
-    def forward(self, x):
+    def forward(self, x, lambda_=None):
         """
         Args:
             x (Tensor): Input tensor.
 
         Returns:
             Tensor: Output tensor after gradient reversal during backprop.
+            :param lambda_:
         """
-        return grad_reverse(x, self.lambda_)
+        return grad_reverse(x, lambda_ if lambda_ is not None else self.lambda_)
