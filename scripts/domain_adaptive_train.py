@@ -22,7 +22,7 @@ def main():
         lr=0.005
     )
 
-    trained_detector = trainer.train(num_epochs=5)
+    trained_detector = trainer.train(num_epochs=25)
 
     # Save adapted model
     os.makedirs('experiments', exist_ok=True)

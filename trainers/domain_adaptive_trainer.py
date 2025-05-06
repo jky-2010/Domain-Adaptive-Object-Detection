@@ -1,6 +1,6 @@
 """
 Author: Elias Mapendo
-Date: April 23, 2025
+Date: April 23 - May 06, 2025
 Description:
 Domain-adaptive trainer for object detection using adversarial learning.
 Combines Faster R-CNN detection loss with domain confusion losses from image-level and instance-level classifiers.
@@ -168,9 +168,6 @@ class DomainAdaptiveTrainer:
 
                     assert isinstance(src_feats, OrderedDict), "src_feats is not an OrderedDict!"
                     assert isinstance(tgt_feats, OrderedDict), "tgt_feats is not an OrderedDict!"
-
-                    print(f"[FINAL CHECK] src_feats type: {type(src_feats)}")
-                    print(f"[FINAL CHECK] src_feats keys: {list(src_feats.keys()) if isinstance(src_feats, dict) else 'NOT A DICT'}")
 
                     expected_keys = ['0', '1', '2', '3', 'pool']
                     assert all(k in src_feats for k in

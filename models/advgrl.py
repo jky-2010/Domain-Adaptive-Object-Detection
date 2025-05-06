@@ -6,7 +6,6 @@ Defines the Gradient Reversal Layer (GRL) used for adversarial domain adaptation
 The GRL acts as an identity during the forward pass and multiplies the gradient by -λ during backpropagation.
 """
 
-import torch
 from torch.autograd import Function
 import torch.nn as nn
 
