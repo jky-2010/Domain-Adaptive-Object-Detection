@@ -87,6 +87,17 @@ class DomainAdaptiveTrainer:
 
         return source_loader, target_loader
 
+    def get_proposals_from_rpn(self, detector, images, features, targets=None):
+        """
+        Safely call RPN using the expected input types.
+        """
+        image_list, _ = detector.transform(images)
+
+        if not isinstance(features, OrderedDict):
+            features = OrderedDict((str(k), v) for k, v in enumerate(features))
+
+        return detector.rpn(features, image_list, targets=targets)
+
     def train_one_epoch(self, source_loader, target_loader):
         """Train for one epoch, alternating between source and target batches."""
         self.detector.train()
@@ -235,34 +246,14 @@ class DomainAdaptiveTrainer:
                     print(f"[FINAL CHECK] src_feats type: {type(src_feats)}")
                     print(f"[FINAL CHECK] src_feats keys: {list(src_feats.keys()) if isinstance(src_feats, dict) else 'NOT A DICT'}")
 
-                    def safe_manual_rpn_call(rpn_module, features, image_sizes):
-                        if isinstance(features, list):
-                            raise TypeError("Features must be a dict, not a list. Check upstream processing.")
-                        if not isinstance(features, dict):
-                            raise TypeError(f"Expected dict for RPN, got {type(features)}")
-
-                        # Just to ensure this code isn't fooled by accidental type cast
-                        if isinstance(features, OrderedDict):
-                            features = dict(features)  # Torchvision RPN uses `.values()` so this is safe
-
-                        return rpn_module(features, image_sizes, None)
-
                     expected_keys = ['0', '1', '2', '3', 'pool']
                     assert all(k in src_feats for k in
                                expected_keys), f"Missing keys in features for RPN: expected {expected_keys}, got {list(src_feats.keys())}"
 
-
+                    print("RPN input check:", type(src_feats), isinstance(src_feats, OrderedDict))
                     # === Call RPN safely ===
-                    src_proposals, _ = self.detector.rpn(
-                        src_feats,
-                        src_image_list.image_sizes,
-                        None
-                    )
-                    tgt_proposals, _ = self.detector.rpn(
-                        tgt_feats,
-                        tgt_image_list.image_sizes,
-                        None
-                    )
+                    src_proposals, _ = self.get_proposals_from_rpn(self.detector, source_images, src_feats, targets=source_targets)
+                    tgt_proposals, _ = self.get_proposals_from_rpn(self.detector, target_images, tgt_feats, targets=None)
 
                     # ROI pooling
                     src_box_features = self.detector.roi_heads.box_roi_pool(
