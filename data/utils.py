@@ -6,13 +6,15 @@ data/utils.py utility for collate function and dataloader construction.
 """
 
 from torch.utils.data import DataLoader, Subset
-import random
+import random, torch
 from data.datasets import CityscapesDataset
 from data.preprocessing import BasicTransform
+from collections import OrderedDict
 
 def collate_fn(batch):
     # Custom collate function for object detection datasets
     return tuple(zip(*batch))
+
 
 def get_dataloaders(batch_size, target_labels, num_workers=2):
     """
@@ -47,3 +49,30 @@ def get_dataloaders(batch_size, target_labels, num_workers=2):
                                collate_fn=collate_fn, num_workers=num_workers)
 
     return source_loader, target_loader
+
+
+def ensure_ordered_dict(feats):
+    """
+    Converts various types of feature outputs into a consistent OrderedDict format.
+
+    Args:
+        feats: Can be a dict, list of feature maps, or a single tensor.
+
+    Returns:
+        OrderedDict: Feature maps with string keys ('0', '1', ..., 'pool').
+
+    Raises:
+        TypeError: If input type is unsupported.
+    """
+    if isinstance(feats, dict):
+        # Already a dict — ensure keys are strings
+        return OrderedDict((str(k), v) for k, v in feats.items())
+    elif isinstance(feats, list):
+        # Convert list to OrderedDict with expected FPN keys
+        expected_keys_list = ['0', '1', '2', '3', 'pool']
+        return OrderedDict((k, f) for k, f in zip(expected_keys_list, feats))
+    elif isinstance(feats, torch.Tensor):
+        # Single tensor case — wrap as dict with a default key
+        return OrderedDict({'0': feats})
+    else:
+        raise TypeError(f"Unsupported feature type: {type(feats)}")
