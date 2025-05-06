@@ -87,16 +87,10 @@ class DomainAdaptiveTrainer:
 
         return source_loader, target_loader
 
-    def get_proposals_from_rpn(self, detector, images, features, targets=None):
-        """
-        Safely call RPN using the expected input types.
-        """
-        image_list, _ = detector.transform(images)
-
+    def get_proposals_from_rpn(self, detector, features, image_list, targets=None):
         if not isinstance(features, OrderedDict):
             features = OrderedDict((str(k), v) for k, v in enumerate(features))
-
-        return detector.rpn(features, image_list, targets=targets)
+        return detector.rpn(image_list, features, targets=targets)
 
     def train_one_epoch(self, source_loader, target_loader):
         """Train for one epoch, alternating between source and target batches."""
@@ -252,8 +246,11 @@ class DomainAdaptiveTrainer:
 
                     print("RPN input check:", type(src_feats), isinstance(src_feats, OrderedDict))
                     # === Call RPN safely ===
-                    src_proposals, _ = self.get_proposals_from_rpn(self.detector, source_images, src_feats, targets=source_targets)
-                    tgt_proposals, _ = self.get_proposals_from_rpn(self.detector, target_images, tgt_feats, targets=None)
+                    src_proposals, _ = self.get_proposals_from_rpn(self.detector, src_feats, src_image_list, targets=source_targets)
+                    self.detector.rpn.eval()
+                    with torch.no_grad():
+                        tgt_proposals, _ = self.get_proposals_from_rpn(self.detector, tgt_feats, tgt_image_list, targets=None)
+                    self.detector.rpn.train()
 
                     # ROI pooling
                     src_box_features = self.detector.roi_heads.box_roi_pool(
