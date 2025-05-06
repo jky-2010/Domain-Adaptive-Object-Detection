@@ -6,7 +6,8 @@ Domain-adaptive trainer for object detection using adversarial learning.
 Combines Faster R-CNN detection loss with domain confusion losses from image-level and instance-level classifiers.
 """
 
-import torch, os, sys, warnings
+import torch, os, sys
+import numpy as np
 from tqdm import tqdm
 from collections import OrderedDict
 from models.faster_cnn import get_faster_rcnn_model
@@ -75,6 +76,10 @@ class DomainAdaptiveTrainer:
         progress_bar = tqdm(range(num_batches), desc="Training Progress")
 
         for batch_idx in progress_bar:
+            # === Update GRL lambda based on batch progress ===
+            p = batch_idx / num_batches
+            lambda_ = 2. / (1. + np.exp(-10 * p)) - 1
+
             # === Source (clear) ===
             try:
                 source_images, source_targets = next(source_iter)
@@ -150,10 +155,10 @@ class DomainAdaptiveTrainer:
                 src_img_features = source_features[0]
                 tgt_img_features = target_features[0]
 
-            src_img_preds = self.image_domain_classifier(src_img_features)
-            tgt_img_preds = self.image_domain_classifier(tgt_img_features)
+            src_img_preds = self.image_domain_classifier(src_img_features, lambda_)
+            tgt_img_preds = self.image_domain_classifier(tgt_img_features, lambda_)
 
-            if (torch.isnan(src_img_preds).any() or torch.isnan(tgt_img_preds).any() ):
+            if (torch.isnan(src_img_preds).any() or torch.isnan(tgt_img_preds).any()):
                 print(f"[WARNING] NaNs in image domain classifier output. Skipping batch {batch_idx}")
                 continue  # Skip this batch
 
@@ -212,8 +217,8 @@ class DomainAdaptiveTrainer:
                     hasattr(src_proposal_feats, 'size') and hasattr(tgt_proposal_feats, 'size') and
                     src_proposal_feats.size(0) > 0 and tgt_proposal_feats.size(0) > 0):
 
-                src_inst_preds = self.instance_domain_classifier(src_proposal_feats)
-                tgt_inst_preds = self.instance_domain_classifier(tgt_proposal_feats)
+                src_inst_preds = self.instance_domain_classifier(src_proposal_feats, lambda_)
+                tgt_inst_preds = self.instance_domain_classifier(tgt_proposal_feats, lambda_)
                 instance_domain_loss = compute_domain_loss(src_inst_preds, tgt_inst_preds, self.device)
             else:
                 instance_domain_loss = torch.tensor(0.0, device=self.device)
