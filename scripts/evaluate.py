@@ -1,7 +1,7 @@
 # Author: Elias Mapendo
 # Description: Evaluate a trained Faster R-CNN model on both Clear and Foggy Cityscapes datasets
 
-import sys, os, torch, csv, random
+import sys, os, torch, csv, random, json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from torch.utils.data import DataLoader, Subset
@@ -116,7 +116,7 @@ def evaluate_on_split(model, split='val', foggy=False, device='cuda'):
         print("[WARN] Skipping IoU: annotations not available for foggy set.")
 
 
-def evaluate_model(model_path, device='cuda'):
+def evaluate_model(model_path, device='cuda', shared_indices_path="outputs/eval_indices.json"):
     target_labels = [24, 25, 26, 27, 28, 31, 32, 33]
     num_classes = len(target_labels) + 1
 
@@ -124,9 +124,21 @@ def evaluate_model(model_path, device='cuda'):
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
 
-    evaluate_on_split(model, split='val', foggy=False, device=device)
-    evaluate_on_split(model, split='val', foggy=True, device=device)
+    # Always use the same random indices for both Clear and Foggy
+    transform = BasicTransform()
+    full_dataset = CityscapesDataset(mode='val', foggy=False, transforms=transform, target_labels=target_labels)
+    num_images = 50
 
+    if os.path.exists(shared_indices_path):
+        with open(shared_indices_path, 'r') as f:
+            indices = json.load(f)
+    else:
+        indices = random.sample(range(len(full_dataset)), num_images)
+        with open(shared_indices_path, 'w') as f:
+            json.dump(indices, f)
+
+    evaluate_on_split(model, split='val', foggy=False, device=device, indices=indices)
+    evaluate_on_split(model, split='val', foggy=True, device=device, indices=indices)
 
 if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
