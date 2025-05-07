@@ -44,7 +44,7 @@ def compute_iou(gt_boxes, pred_boxes, threshold=0.5):
     return matches / max(len(gt_boxes), 1)
 
 
-def evaluate_on_split(model, split='val', foggy=False, device='cuda'):
+def evaluate_on_split(model, split='val', foggy=False, device='cuda', indices=None):
     name = "Foggy" if foggy else "Clear"
     print(f"\n[INFO] Evaluating on {name} Cityscapes ({split})...")
 
@@ -56,7 +56,9 @@ def evaluate_on_split(model, split='val', foggy=False, device='cuda'):
         mode=split, foggy=foggy, transforms=transform, target_labels=target_labels
     )
 
-    indices = random.sample(range(len(dataset)), 50)
+    if indices is None:
+        raise ValueError("Expected `indices` to be passed for synchronized evaluation.")
+
     subset = Subset(dataset, indices)
     loader = DataLoader(subset, batch_size=1, shuffle=False, collate_fn=collate_fn)
 
