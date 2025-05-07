@@ -48,6 +48,8 @@ class CityscapesDataset(Dataset):
                         if file_name.endswith('_gtFine_labelIds.png'):
                             self.annotations.append(os.path.join(city_ann_dir, file_name))
 
+        self.image_paths = self.images
+
     def __len__(self):
         return len(self.images)
 
