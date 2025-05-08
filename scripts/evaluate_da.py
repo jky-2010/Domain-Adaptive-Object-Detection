@@ -46,17 +46,14 @@ def filter_by_names(dataset, name_list):
     matched_names = []
 
     for name in name_list:
-        for img_path in dataset.images:
-            if name in os.path.basename(img_path):
-                matched_image_paths.append(img_path)
-                matched_names.append(name)
-                break
+        img_match = next((p for p in dataset.images if name in os.path.basename(p)), None)
+        ann_match = next((a for a in dataset.annotations if name in os.path.basename(a)), None) if dataset.annotations_available else None
 
-        if dataset.annotations_available:
-            for ann_path in dataset.annotations:
-                if name in os.path.basename(ann_path):
-                    matched_anno_paths.append(ann_path)
-                    break
+        if img_match:
+            matched_image_paths.append(img_match)
+            matched_names.append(name)
+            if dataset.annotations_available and ann_match:
+                matched_anno_paths.append(ann_match)
 
     dataset.images = matched_image_paths
     if dataset.annotations_available:
