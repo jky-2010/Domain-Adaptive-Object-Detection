@@ -71,6 +71,7 @@ class GradientReversalLayer(nn.Module):
 
         Returns:
             Tensor: Output tensor after gradient reversal during backprop.
+            :param x:
             :param lambda_:
         """
         return grad_reverse(x, lambda_ if lambda_ is not None else self.lambda_)
