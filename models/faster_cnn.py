@@ -1,4 +1,4 @@
-# Author: Elias Mapendo
+# Author: James Yang
 # Description: Initializes a Faster R-CNN model with configurable backbone and head for object detection on Cityscapes
 
 import torchvision
