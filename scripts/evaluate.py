@@ -1,4 +1,4 @@
-# Author: Elias Mapendo
+# Author: James Yang
 # Description: Evaluate a trained Faster R-CNN model on paired Clear and Foggy Cityscapes images using filenames
 
 import sys, os, torch, csv, random, json
